@@ -1,7 +1,7 @@
 # ============================================================
-# Docker image untuk Hugging Face Spaces
-# Menjalankan FastAPI API + Celery worker dalam SATU kontainer
-# (Hugging Face Spaces = 1 kontainer per Space)
+# Docker image untuk backend Instagram Auto Comment Bot.
+# Menjalankan FastAPI API + Celery worker dalam SATU kontainer.
+# Platform-agnostik: bisa dipakai di Railway, Render, dsb.
 # ============================================================
 FROM python:3.11-slim
 
@@ -27,7 +27,7 @@ COPY . .
 # Beri izin eksekusi pada script start
 RUN chmod +x start.sh
 
-# Hugging Face Spaces selalu memakai port 7860
-EXPOSE 7860
+# Port yang dipakai container (Railway meng-inject $PORT saat runtime)
+EXPOSE 8000
 
 CMD ["./start.sh"]

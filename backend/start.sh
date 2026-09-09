@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # ============================================================
-# Entrypoint untuk Hugging Face Spaces.
+# Entrypoint container untuk backend.
 # Menjalankan FastAPI (uvicorn) DAN Celery worker sekaligus.
 # ============================================================
 set -euo pipefail
 
-# Default aman untuk server (bisa di-override lewat Env di Hugging Face)
+# Default aman untuk server (bisa di-override lewat Environment Variable)
 export LIVE_HEADLESS="${LIVE_HEADLESS:-true}"
 export COMMENT_STATE_DIR="${COMMENT_STATE_DIR:-/tmp/comment-state}"
 export CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-1}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
 
-# Hugging Face Spaces menyediakan variabel PORT (7860)
-PORT="${PORT:-7860}"
+# Railway / Render / dsb. meng-inject variabel PORT otomatis.
+# Default 8000 dipakai kalau variabel PORT tidak ada.
+PORT="${PORT:-8000}"
 
 echo "==> Menjalankan Celery worker..."
 celery -A celery_app.celery_app worker --loglevel="$LOG_LEVEL" --pool=solo &
