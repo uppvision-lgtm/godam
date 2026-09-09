@@ -192,8 +192,8 @@ def _get_session(token: str) -> LiveSession:
 async def start_live(request: StartRequest) -> dict:
     if not request.username.strip() or not request.session_id.strip() or not request.target.strip():
         raise HTTPException(status_code=422, detail="username, session_id, dan target wajib diisi")
-    if not (1 <= request.comment_count <= 10):
-        raise HTTPException(status_code=422, detail="comment_count harus 1-10")
+    if not (1 <= request.comment_count <= 100):
+        raise HTTPException(status_code=422, detail="comment_count harus 1-100")
     if not (1 <= request.max_posts <= 50):
         raise HTTPException(status_code=422, detail="max_posts harus 1-50")
     token = uuid.uuid4().hex

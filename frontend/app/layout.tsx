@@ -9,8 +9,8 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
-  title: "Instagram Auto Comment Bot",
-  description: "Monitor Instagram comment automation jobs.",
+  title: "IG Tools — Alat Bantu Instagram",
+  description: "Kumpulan alat bantu Instagram: auto comment, auto like, dan lainnya.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

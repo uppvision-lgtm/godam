@@ -44,7 +44,7 @@ app.include_router(live_login_router)
 class JobRequest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     target: str = Field(min_length=1, max_length=200)
-    comment_count: int = Field(ge=1, le=10)
+    comment_count: int = Field(ge=1, le=100)
     session_id: str = Field(min_length=1, max_length=2000)
 
 
