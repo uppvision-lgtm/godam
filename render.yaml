@@ -9,16 +9,10 @@ services:
     envVars:
       - key: REDIS_URL
         sync: false
-      - key: DEEPSEEK_API_KEY
-        sync: false
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
       - key: FRONTEND_URL
         sync: false
-      - key: DEEPSEEK_BASE_URL
-        value: https://api.deepseek.com/v1
-      - key: DEEPSEEK_MODEL
-        value: deepseek-chat
       - key: INSTAGRAM_SESSION_COOKIE
         value: sessionid
       - key: COMMENT_STATE_DIR
@@ -43,14 +37,8 @@ services:
     envVars:
       - key: REDIS_URL
         sync: false
-      - key: DEEPSEEK_API_KEY
-        sync: false
       - key: CREDENTIAL_ENCRYPTION_KEY
         sync: false
-      - key: DEEPSEEK_BASE_URL
-        value: https://api.deepseek.com/v1
-      - key: DEEPSEEK_MODEL
-        value: deepseek-chat
       - key: INSTAGRAM_SESSION_COOKIE
         value: sessionid
       - key: COMMENT_STATE_DIR

@@ -22,7 +22,6 @@ Space ini adalah **satu kontainer** yang menjalankan dua proses sekaligus:
 | Variabel | Keterangan |
 |----------|-----------|
 | `REDIS_URL` | URL Redis dari Upstash (free tier, tanpa kartu kredit) |
-| `DEEPSEEK_API_KEY` | API key DeepSeek untuk generate komentar |
 | `CREDENTIAL_ENCRYPTION_KEY` | Kunci Fernet untuk enkripsi session |
 | `FRONTEND_URL` | URL frontend Vercel, mis. `https://xxx.vercel.app` |
 

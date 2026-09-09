@@ -108,7 +108,7 @@ BACKEND_API_URL=https://instagram-bot-api.onrender.com
 ```
 
 `NEXT_PUBLIC_API_URL` tidak diperlukan oleh UI saat ini. Jangan menaruh
-`DEEPSEEK_API_KEY`, `REDIS_URL`, atau password di variable `NEXT_PUBLIC_*`.
+`REDIS_URL`, atau password di variable `NEXT_PUBLIC_*`.
 
 Jika memilih **Root Directory = frontend** di Vercel, pindahkan konfigurasi ke
 `frontend/vercel.json` atau gunakan konfigurasi Next.js default, bukan keduanya.
@@ -118,7 +118,7 @@ Jika memilih **Root Directory = frontend** di Vercel, pindahkan konfigurasi ke
 1. Buka Render Dashboard, pilih **New > Blueprint**.
 2. Hubungkan repository GitHub ini.
 3. Render membaca `render.yaml` dan membuat service API serta worker.
-4. Isi `REDIS_URL`, `DEEPSEEK_API_KEY`, dan `FRONTEND_URL` saat diminta.
+4. Isi `REDIS_URL` dan `FRONTEND_URL` saat diminta.
 5. Salin URL API Render ke `BACKEND_API_URL` di Vercel.
 6. Isi `FRONTEND_URL` dengan URL Vercel, misalnya
 	`https://instagram-bot-app.vercel.app`.
@@ -152,7 +152,6 @@ heroku login
 heroku create instagram-bot-worker
 heroku config:set PIP_REQUIREMENTS_FILE=backend/requirements.txt
 heroku config:set REDIS_URL='rediss://default:PASSWORD@YOUR-UPSTASH-ENDPOINT:6379'
-heroku config:set DEEPSEEK_API_KEY='YOUR_DEEPSEEK_KEY'
 git push heroku main
 heroku ps:scale worker=1
 heroku logs --tail --dyno worker
@@ -181,10 +180,7 @@ Render API dan worker:
 
 ```env
 REDIS_URL=rediss://default:PASSWORD@HOST:6379
-DEEPSEEK_API_KEY=your_deepseek_key
 CREDENTIAL_ENCRYPTION_KEY=generate_a_fernet_key
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_MODEL=deepseek-chat
 COMMENT_STATE_DIR=/tmp/comment-state
 RATE_LIMIT_PER_IP_PER_DAY=10
 COMMENT_CACHE_TTL_SECONDS=3600
@@ -241,11 +237,10 @@ Validasi berurutan:
 	sudah tersedia.
 - Logtail dapat dipakai bila retention log bawaan tidak cukup.
 
-Jangan log password, `DEEPSEEK_API_KEY`, atau isi request credential.
+Jangan log password atau isi request credential.
 
 Checklist keamanan:
 
-- Jangan expose `DEEPSEEK_API_KEY` melalui frontend atau `NEXT_PUBLIC_*`.
 - Jangan menyimpan password di log, analytics, atau client-side storage.
 - Password dienkripsi (Fernet) sebelum masuk antrean Celery dan hanya dipakai
 	untuk login sesi tersebut di worker; tidak pernah disimpan ke disk.
@@ -258,7 +253,7 @@ Checklist keamanan:
 - [ ] Jalankan smoke test `/health` dan `/docs`.
 - [ ] Uji validasi input dan rate limit HTTP 422/429.
 - [ ] Uji happy path dengan satu target yang diizinkan dan credential valid.
-- [ ] Uji session expired, target hilang, target tanpa post, throttle, dan DeepSeek error.
+- [ ] Uji session expired, target hilang, target tanpa post, dan throttle.
 - [ ] Set semua secret di Vercel, Render, atau Heroku; jangan commit `.env`.
 - [ ] Periksa UI di desktop dan mobile.
 - [ ] Pastikan log Vercel/API/worker bersih dari credential.
@@ -269,7 +264,7 @@ Checklist keamanan:
 ## Lisensi
 
 Proyek ini dirilis di bawah [MIT License](LICENSE). Pastikan penggunaan tetap
-mematuhi Terms of Use Instagram, kebijakan DeepSeek, dan hukum setempat.
+mematuhi Terms of Use Instagram dan hukum setempat.
 
 ## Berbagi Proyek
 
@@ -318,7 +313,7 @@ playwright install chromium
 
 ## Instagram Worker Configuration
 
-Isi `backend/.env` dengan `DEEPSEEK_API_KEY` dan `CREDENTIAL_ENCRYPTION_KEY`
+Isi `backend/.env` dengan `CREDENTIAL_ENCRYPTION_KEY`
 sebelum menjalankan task. Worker melakukan login otomatis ke Instagram dengan
 username dan password dari request, mengambil cookie `sessionid`, lalu menjalankan
 bot dalam sesi tersebut. Password tidak disimpan; hanya dienkripsi saat transit
@@ -368,7 +363,7 @@ curl http://localhost:8000/api/job-status/TASK_ID
 | E2E-03 | Target tidak ditemukan | Task `FAILURE` dengan pesan target tidak ditemukan |
 | E2E-04 | Target tidak punya post | `SUCCESS` dengan `posts_processed: 0`, tidak ada komentar |
 | E2E-05 | Instagram throttle/rate limit | State `RETRY`, retry sekitar 5 menit, maksimum 3 kali |
-| E2E-06 | DeepSeek 429/5xx/timeout | State `RETRY`, lalu error jelas setelah batas retry |
+| E2E-06 | Caption tidak bisa diproses | Fallback ke bank komentar lokal, task tetap berjalan |
 | E2E-07 | Backend mati | UI menampilkan error proxy/backend dan tidak membuat task palsu |
 | E2E-08 | comment count 0 atau 11 | API mengembalikan HTTP 422 |
 
@@ -435,7 +430,7 @@ untuk state durable sebelum mengandalkan riwayat lintas deploy.
 
 ### Retry dan timeout
 
-Task retryable (throttle Instagram, DeepSeek 429/5xx, atau timeout jaringan)
+Task retryable (throttle Instagram atau timeout jaringan)
 akan dijadwalkan ulang dengan jeda 300 detik dan maksimum tiga percobaan. Error
 permanen seperti session expired atau target tidak ditemukan langsung menjadi
 hasil `error`.
@@ -490,9 +485,9 @@ dan `MAX_POSTS_PER_JOB`. Jalankan satu target uji yang memiliki post publik.
 `playwright install chromium`; gunakan `--with-deps` bila image membutuhkan
 system packages.
 
-**DeepSeek error:** periksa `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, quota, dan
-status code API. Task 429/5xx/timeout akan retry; error lain menjadi fallback atau
-error permanen sesuai responsnya.
+**Caption tidak menghasilkan komentar:** pastikan caption mengandung kata kunci
+yang cukup. Bot akan memakai bank komentar lokal sebagai cadangan agar task tetap
+selesai.
 
 ### Live login assist (CAPTCHA manual)
 
