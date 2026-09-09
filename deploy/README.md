@@ -24,9 +24,9 @@ nano .env
 Isi `.env`:
 
 ```env
-APP_PORT=80
 DEBUG=false
 FRONTEND_URL=https://auto-comment.tech,https://www.auto-comment.tech
+ACME_EMAIL=admin@auto-comment.tech
 CREDENTIAL_ENCRYPTION_KEY=HASIL_GENERATE
 SECRET_KEY=string-acak-panjang
 ```
@@ -51,9 +51,11 @@ Tambahkan public key di GitHub → **Settings → Deploy keys**, lalu clone paka
 git clone git@github.com:uppvision-lgtm/godam.git /opt/godam
 ```
 
-## 3. Domain
+## 3. Domain + SSL
 
-Di DNS `auto-comment.tech`, A record `@` dan `www` ke IP public VPS.
+Di DNS `auto-comment.tech`, A record `@` ke IP public VPS. CNAME `www` → `auto-comment.tech`.
+
+Firewall Hostinger harus **Accept TCP 80 dan 443**. Caddy di compose mengambil sertifikat Let's Encrypt sendiri; HTTP di domain akan redirect ke HTTPS.
 
 ## 4. Auto-deploy (opsional)
 

@@ -21,9 +21,9 @@ git pull --ff-only origin main || true
 
 if [ ! -f .env ]; then
   cat > .env <<'ENV'
-APP_PORT=80
 DEBUG=false
 FRONTEND_URL=https://auto-comment.tech,https://www.auto-comment.tech
+ACME_EMAIL=admin@auto-comment.tech
 CREDENTIAL_ENCRYPTION_KEY=
 SECRET_KEY=
 LOG_LEVEL=INFO
