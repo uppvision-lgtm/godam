@@ -140,8 +140,35 @@ class LiveSession:
                     self.latest_jpeg = await self._page.screenshot(type="jpeg", quality=70)
             except Exception:
                 pass
+            # Tutup Chromium otomatis begitu job selesai (completed/error)
+            # supaya memori segera dibebaskan dan tidak menumpuk.
+            await self._shutdown_browser()
+
+    async def _shutdown_browser(self) -> None:
+        """Tutup Chromium + Playwright dan lepaskan referensinya.
+
+        Idempoten: aman dipanggil berkali-kali, dan aman dipanggil dari dalam
+        task job sendiri (tidak membatalkan task pemanggil).
+        """
+        self._running = False
+        browser, playwright = self._browser, self._playwright
+        self._browser = None
+        self._playwright = None
+        self._page = None
+        self._context = None
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception:
+            pass
+        try:
+            if playwright is not None:
+                await playwright.stop()
+        except Exception:
+            pass
 
     async def close(self) -> None:
+        """Hentikan task & tutup browser segera (dipanggil tombol Stop)."""
         self._running = False
         for task in (self._capture_task, self._job_task):
             if task is None:
@@ -151,19 +178,7 @@ class LiveSession:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        try:
-            if self._browser is not None:
-                await self._browser.close()
-        except Exception:
-            pass
-        try:
-            if self._playwright is not None:
-                await self._playwright.stop()
-        except Exception:
-            pass
-        self._page = None
-        self._context = None
-        self._browser = None
+        await self._shutdown_browser()
 
 
 def _get_session(token: str) -> LiveSession:

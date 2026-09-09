@@ -133,6 +133,23 @@ export default function Home() {
     setFrameUrl("");
   }
 
+  // Tutup Chromium di backend otomatis saat halaman ditutup/di-refresh,
+  // supaya browser tidak menggantung & memori tidak menumpuk.
+  useEffect(() => {
+    if (!token) return;
+    const closeOnUnload = () => {
+      try {
+        navigator.sendBeacon(`/api/live/${token}/close`, "");
+      } catch {
+        // abaikan
+      }
+    };
+    window.addEventListener("beforeunload", closeOnUnload);
+    return () => {
+      window.removeEventListener("beforeunload", closeOnUnload);
+    };
+  }, [token]);
+
   return (
     <div className={styles.page}>
       <header className={styles.topbar}>
