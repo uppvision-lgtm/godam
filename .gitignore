@@ -1,0 +1,8 @@
+backend/.env
+backend/.venv/
+backend/venv/
+backend/.comment-state/
+backend/__pycache__/
+*.py[cod]
+frontend/.env.local
+frontend/.next/
