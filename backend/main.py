@@ -30,10 +30,15 @@ frontend_origins = [
     if origin.strip()
 ]
 
+# Saat backend lokal (DEBUG=true) izinkan semua origin, supaya mode "via PC"
+# (browser membuka frontend dari domain Vercel lalu memanggil localhost:8000)
+# tidak diblokir CORS. Railway tetap memakai daftar FRONTEND_URL di atas.
+local_debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=frontend_origins,
-    allow_credentials=True,
+    allow_origins=["*"] if local_debug else frontend_origins,
+    allow_credentials=False if local_debug else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
