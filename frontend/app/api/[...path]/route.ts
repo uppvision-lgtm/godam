@@ -17,7 +17,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
       cache: "no-store",
     });
-    return new NextResponse(await response.arrayBuffer(), {
+    const payload = await response.arrayBuffer();
+    if (response.status === 204 || payload.byteLength === 0) {
+      return new NextResponse(null, { status: response.status });
+    }
+    return new NextResponse(payload, {
       status: response.status,
       headers: { "content-type": response.headers.get("content-type") || "application/json" },
     });

@@ -1,7 +1,7 @@
 # ============================================================
 # Docker image untuk backend Instagram Auto Comment Bot.
 # Menjalankan FastAPI API + Celery worker dalam SATU kontainer.
-# Platform-agnostik: bisa dipakai di Railway, Render, dsb.
+# Platform-agnostik: Railway, Render, VPS Hostinger, dsb.
 # ============================================================
 FROM python:3.11-slim
 

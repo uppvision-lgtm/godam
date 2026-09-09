@@ -1,15 +1,21 @@
 """Live browser run (session-id based).
 
-Opens a Playwright browser inside the FastAPI process, authenticates using the
-Instagram ``sessionid`` cookie, then runs the whole comment job on the visible
-page while streaming JPEG frames and a step log to the frontend. The user can
-therefore watch the bot work from start to finish without needing a CAPTCHA.
+Opens a Playwright browser, authenticates using the Instagram ``sessionid``
+cookie, then runs the comment job while streaming JPEG frames and a step log
+to the frontend.
+
+Playwright is started on a dedicated thread with a Proactor event loop. Uvicorn
+``--reload`` on Windows uses SelectorEventLoop, which cannot spawn Chromium
+(``NotImplementedError`` with an empty message).
 """
 
 import asyncio
 import logging
 import os
+import sys
+import threading
 import uuid
+from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
@@ -51,12 +57,23 @@ class LiveSession:
         self._page = None
         self._capture_task: asyncio.Task | None = None
         self._job_task: asyncio.Task | None = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
 
     def add_log(self, text: str) -> None:
         self.logs.append(text)
         if len(self.logs) > 300:
             del self.logs[:-300]
         logger.info("[%s] %s", self.token[:6], text)
+
+    def _fail_start(self, exc: BaseException) -> None:
+        detail = str(exc).strip() or repr(exc)
+        logger.exception("Gagal menyiapkan browser")
+        self.status = "error"
+        self.message = f"Gagal menyiapkan browser: {type(exc).__name__}: {detail}"
+        self.add_log(f"Error: {type(exc).__name__}: {detail}")
+        self._ready.set()
 
     async def start(
         self,
@@ -66,6 +83,40 @@ class LiveSession:
         comment_count: int,
         max_posts: int = 3,
     ) -> None:
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            args=(username, session_id, target, comment_count, max_posts),
+            daemon=True,
+            name=f"live-{self.token[:6]}",
+        )
+        self._thread.start()
+        await asyncio.to_thread(self._ready.wait, 45)
+
+    def _thread_main(
+        self,
+        username: str,
+        session_id: str,
+        target: str,
+        comment_count: int,
+        max_posts: int,
+    ) -> None:
+        if sys.platform == "win32":
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        try:
+            asyncio.run(self._async_main(username, session_id, target, comment_count, max_posts))
+        except Exception as exc:
+            if self.status == "starting":
+                self._fail_start(exc)
+
+    async def _async_main(
+        self,
+        username: str,
+        session_id: str,
+        target: str,
+        comment_count: int,
+        max_posts: int,
+    ) -> None:
+        self._loop = asyncio.get_running_loop()
         headless = os.getenv("LIVE_HEADLESS", "false").lower() == "true"
         try:
             self._playwright = await async_playwright().start()
@@ -81,19 +132,28 @@ class LiveSession:
             )
             from tasks import _add_session_cookie
 
-            await _add_session_cookie(self._page, session_id)
+            await _add_session_cookie(self._page, unquote(session_id).strip())
             self.status = "running"
             self.message = f"Session dipasang. Membuka @{target} ..."
             self.add_log(f"Session diterima untuk akun {username}")
             self.add_log(f"Menuju channel @{target}")
+            self._ready.set()
             self._capture_task = asyncio.create_task(self._capture_loop())
             self._job_task = asyncio.create_task(
                 self._run_job(username, target, comment_count, max_posts)
             )
+            await self._job_task
         except Exception as exc:
-            self.status = "error"
-            self.message = f"Gagal menyiapkan browser: {exc}"
-            self.add_log(f"Error: {exc}")
+            if self.status in {"starting", "running"} and self.result is None:
+                if self.status == "starting":
+                    self._fail_start(exc)
+                else:
+                    self.status = "error"
+                    self.message = f"Job gagal: {exc}"
+                    self.add_log(f"Error: {exc}")
+        finally:
+            self._ready.set()
+            await self._shutdown_browser()
 
     async def _capture_loop(self) -> None:
         while self._running:
@@ -129,6 +189,8 @@ class LiveSession:
                 f"pada {result.get('posts_processed', 0)} postingan."
             )
             self.add_log(self.message)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             self.status = "error"
             self.message = f"Job gagal: {exc}"
@@ -140,17 +202,17 @@ class LiveSession:
                     self.latest_jpeg = await self._page.screenshot(type="jpeg", quality=70)
             except Exception:
                 pass
-            # Tutup Chromium otomatis begitu job selesai (completed/error)
-            # supaya memori segera dibebaskan dan tidak menumpuk.
-            await self._shutdown_browser()
 
     async def _shutdown_browser(self) -> None:
-        """Tutup Chromium + Playwright dan lepaskan referensinya.
-
-        Idempoten: aman dipanggil berkali-kali, dan aman dipanggil dari dalam
-        task job sendiri (tidak membatalkan task pemanggil).
-        """
         self._running = False
+        for task in (self._capture_task, self._job_task):
+            if task is None or task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         browser, playwright = self._browser, self._playwright
         self._browser = None
         self._playwright = None
@@ -168,17 +230,16 @@ class LiveSession:
             pass
 
     async def close(self) -> None:
-        """Hentikan task & tutup browser segera (dipanggil tombol Stop)."""
         self._running = False
-        for task in (self._capture_task, self._job_task):
-            if task is None:
-                continue
-            task.cancel()
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self._shutdown_browser(), loop)
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wrap_future(future)
+            except Exception:
                 pass
-        await self._shutdown_browser()
+        if self._thread is not None and self._thread.is_alive():
+            await asyncio.to_thread(self._thread.join, 15)
 
 
 def _get_session(token: str) -> LiveSession:

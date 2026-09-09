@@ -1,6 +1,13 @@
-import os
+import asyncio
 import hashlib
+import os
+import sys
 from datetime import datetime, timezone
+
+# Playwright butuh subprocess. Di Windows, loop default uvicorn (Selector)
+# tidak mengimplementasikannya dan melempar NotImplementedError kosong.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import redis
 from celery.result import AsyncResult

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import styles from "./page.module.css";
 
 type LiveStatus = {
@@ -40,8 +40,17 @@ function apiUrl(path: string): string {
   return `http://localhost:8000${path}`; // langsung ke backend PC
 }
 
+function subscribeMode(onStoreChange: () => void) {
+  window.addEventListener("popstate", onStoreChange);
+  return () => window.removeEventListener("popstate", onStoreChange);
+}
+
+function getPcModeSnapshot() {
+  return new URLSearchParams(window.location.search).get("mode") === "pc";
+}
+
 export default function Home() {
-  const [isPc, setIsPc] = useState(false);
+  const isPc = useSyncExternalStore(subscribeMode, getPcModeSnapshot, () => false);
   const [values, setValues] = useState(initialValues);
   const [token, setToken] = useState("");
   const [status, setStatus] = useState("");
@@ -54,10 +63,6 @@ export default function Home() {
   const frameRef = useRef<HTMLImageElement | null>(null);
 
   const isTerminal = status === "completed" || status === "error";
-
-  useEffect(() => {
-    setIsPc(new URLSearchParams(window.location.search).get("mode") === "pc");
-  }, []);
 
   useEffect(() => {
     if (!token) return;
