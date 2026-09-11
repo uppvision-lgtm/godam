@@ -1,5 +1,7 @@
 import Link from "next/link";
 import styles from "./page.module.css";
+import LiveStats from "./components/LiveStats";
+import TutorialFab from "./components/TutorialFab";
 
 type Tool = {
   id: string;
@@ -43,6 +45,7 @@ export default function Home() {
       <main className={styles.main}>
         <section className={styles.hero}>
           <h1>Pilih Tools Kamu</h1>
+          <LiveStats />
         </section>
 
         <section className={styles.grid}>
@@ -78,6 +81,8 @@ export default function Home() {
           <span>Pakai dengan bijak.</span>
         </footer>
       </main>
+
+      <TutorialFab />
     </div>
   );
 }

@@ -9,6 +9,7 @@ therefore watch the bot work from start to finish without needing a CAPTCHA.
 import asyncio
 import logging
 import os
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Response
@@ -16,9 +17,90 @@ from pydantic import BaseModel
 
 from playwright.async_api import async_playwright
 
+from browser_config import (
+    blocked_resource_types,
+    browser_args,
+    frame_idle_ms,
+    frame_interval_ms,
+    frame_quality,
+    viewport,
+)
+
 logger = logging.getLogger("live")
 router = APIRouter(prefix="/api/live", tags=["live"])
 _SESSIONS: dict[str, "LiveSession"] = {}
+
+# Batas browser yang boleh jalan bersamaan. Setiap sesi memakan satu Chromium
+# (±300MB di server), jadi di server kecil batas ini bisa diturunkan lewat env
+# LIVE_MAX_SESSIONS (mis. 2) supaya container tidak kehabisan memori.
+MAX_CONCURRENT_SESSIONS = max(1, int(os.getenv("LIVE_MAX_SESSIONS", "5")))
+
+# 1 Chromium dipakai bersama semua bot (tiap bot = 1 tab/context). Hasil ukur
+# lokal 5 bot: 5 browser terpisah 1392MB/21 proses vs 1 browser + 5 tab
+# 741MB/9 proses (±47% lebih hemat). Set LIVE_SHARED_BROWSER=0 untuk kembali
+# memakai satu browser per bot.
+SHARED_BROWSER = os.getenv("LIVE_SHARED_BROWSER", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+class _SharedBrowserPool:
+    """Satu Chromium untuk banyak sesi, ditutup otomatis saat pemakai terakhir keluar."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._playwright = None
+        self._browser = None
+        self._users = 0
+
+    @property
+    def users(self) -> int:
+        return self._users
+
+    async def acquire(self, headless: bool):
+        """Pinjam browser bersama; dipakai sebagai context baru per sesi."""
+        async with self._lock:
+            if self._browser is None or not self._browser.is_connected():
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(
+                    headless=headless,
+                    args=browser_args(),
+                )
+            self._users += 1
+            return self._browser
+
+    async def release(self) -> None:
+        """Lepas satu pemakai; browser ditutup kalau sudah tidak ada pemakai."""
+        async with self._lock:
+            self._users = max(0, self._users - 1)
+            if self._users == 0:
+                await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
+        browser, playwright = self._browser, self._playwright
+        self._browser = None
+        self._playwright = None
+        try:
+            if browser is not None:
+                await browser.close()
+        except Exception:
+            pass
+        try:
+            if playwright is not None:
+                await playwright.stop()
+        except Exception:
+            pass
+
+    async def stop_all(self) -> None:
+        async with self._lock:
+            self._users = 0
+            await self._stop_locked()
+
+
+_POOL = _SharedBrowserPool()
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -32,6 +114,8 @@ class StartRequest(BaseModel):
     target: str
     comment_count: int = 3
     max_posts: int = 3
+    # Nada komentar yang dipilih user di form: positif (default) | netral | negatif
+    tone: str = "positif"
 
 
 class LiveSession:
@@ -41,16 +125,36 @@ class LiveSession:
         self.message = "Menyiapkan browser..."
         self.logs: list[str] = []
         self.result: dict | None = None
-        self.width = 1280
-        self.height = 900
+        ukuran = viewport()
+        self.width = ukuran["width"]
+        self.height = ukuran["height"]
         self.latest_jpeg: bytes | None = None
         self._running = True
+        # Kapan terakhir ada yang meminta frame. Kalau sudah lama tidak ada,
+        # loop screenshot berhenti supaya CPU/memori tidak terbuang.
+        self._last_frame_request = 0.0
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
+        self._shared = False
+        self._released = False
+        self._closing: asyncio.Task | None = None
         self._capture_task: asyncio.Task | None = None
         self._job_task: asyncio.Task | None = None
+
+    def is_browser_alive(self) -> bool:
+        """True selama Chromium sesi ini benar-benar berjalan.
+
+        Dipakai landing page untuk menghitung bot yang aktif. Sengaja memeriksa
+        tab-nya (bukan sekadar ``status``) supaya angkanya turun tepat saat
+        Chromium ditutup — termasuk saat job selesai sendiri atau tab-nya mati
+        tanpa sempat mengubah status.
+        """
+        if self._page is not None:
+            return not self._page.is_closed()
+        # Belum punya tab tapi masih "starting" = Chromium sedang dibuka.
+        return self.status == "starting" and self._running
 
     def add_log(self, text: str) -> None:
         self.logs.append(text)
@@ -65,11 +169,20 @@ class LiveSession:
         target: str,
         comment_count: int,
         max_posts: int = 3,
+        tone: str = "positif",
     ) -> None:
         headless = os.getenv("LIVE_HEADLESS", "false").lower() == "true"
         try:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=headless)
+            if SHARED_BROWSER:
+                # 1 Chromium untuk semua bot: yang baru hanya membuka tab baru.
+                self._browser = await _POOL.acquire(headless)
+                self._shared = True
+            else:
+                self._playwright = await async_playwright().start()
+                self._browser = await self._playwright.chromium.launch(
+                    headless=headless,
+                    args=browser_args(),
+                )
             self._context = await self._browser.new_context(
                 viewport={"width": self.width, "height": self.height},
                 user_agent=USER_AGENT,
@@ -79,16 +192,23 @@ class LiveSession:
             self._page.set_default_navigation_timeout(
                 int(os.getenv("PLAYWRIGHT_NAVIGATION_TIMEOUT_MS", "30000"))
             )
+            await self._blokir_resource_berat()
             from tasks import _add_session_cookie
 
             await _add_session_cookie(self._page, session_id)
             self.status = "running"
             self.message = f"Session dipasang. Membuka @{target} ..."
             self.add_log(f"Session diterima untuk akun {username}")
+            self.add_log(f"Tone komentar: {tone}")
+            if self._shared:
+                self.add_log(
+                    f"Mode hemat: 1 Chromium dipakai bersama "
+                    f"({_POOL.users} tab terbuka)."
+                )
             self.add_log(f"Menuju channel @{target}")
             self._capture_task = asyncio.create_task(self._capture_loop())
             self._job_task = asyncio.create_task(
-                self._run_job(username, target, comment_count, max_posts)
+                self._run_job(username, target, comment_count, max_posts, tone)
             )
         except Exception as exc:
             self.status = "error"
@@ -96,13 +216,56 @@ class LiveSession:
             self.add_log(f"Error: {exc}")
 
     async def _capture_loop(self) -> None:
+        """Kirim frame ke frontend — hanya saat ada yang menonton.
+
+        Kalau tidak ada permintaan frame selama LIVE_FRAME_IDLE_MS, loop ini
+        berhenti mengambil screenshot sehingga 1 bot hampir tidak memakai CPU
+        saat jendelanya tertutup/tidak dilihat.
+        """
+        interval = frame_interval_ms() / 1000
+        if interval <= 0:
+            # LIVE_FRAME_INTERVAL_MS=0 -> streaming gambar dimatikan total.
+            self.add_log("Streaming gambar dimatikan (mode paling hemat).")
+            return
+        idle_after = frame_idle_ms() / 1000
+        quality = frame_quality()
         while self._running:
             try:
-                if self._page is not None and not self._page.is_closed():
-                    self.latest_jpeg = await self._page.screenshot(type="jpeg", quality=70)
+                ditonton = (time.monotonic() - self._last_frame_request) <= idle_after
+                if (
+                    ditonton
+                    and self._page is not None
+                    and not self._page.is_closed()
+                ):
+                    self.latest_jpeg = await self._page.screenshot(
+                        type="jpeg", quality=quality, scale="css"
+                    )
             except Exception:
                 pass
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(interval)
+
+    async def _blokir_resource_berat(self) -> None:
+        """Batalkan font & media (opsional gambar) supaya hemat bandwidth/CPU."""
+        if self._page is None:
+            return
+        blocked = blocked_resource_types()
+        if not blocked:
+            return
+
+        async def handler(route) -> None:
+            try:
+                if route.request.resource_type in blocked:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:
+                pass
+
+        try:
+            await self._page.route("**/*", handler)
+            self.add_log(f"Mode hemat: {', '.join(sorted(blocked))} dibatalkan.")
+        except Exception:
+            pass
 
     async def _run_job(
         self,
@@ -110,6 +273,7 @@ class LiveSession:
         target: str,
         comment_count: int,
         max_posts: int = 3,
+        tone: str = "positif",
     ) -> None:
         try:
             from tasks import _process_posts
@@ -121,6 +285,7 @@ class LiveSession:
                 comment_count,
                 log=self.add_log,
                 max_posts=max_posts,
+                tone=tone,
             )
             self.result = result
             self.status = "completed"
@@ -145,17 +310,38 @@ class LiveSession:
             await self._shutdown_browser()
 
     async def _shutdown_browser(self) -> None:
-        """Tutup Chromium + Playwright dan lepaskan referensinya.
+        """Tutup tab milik sesi ini (browser ikut ditutup kalau tidak dipakai bersama).
 
-        Idempoten: aman dipanggil berkali-kali, dan aman dipanggil dari dalam
-        task job sendiri (tidak membatalkan task pemanggil).
+        Aman dipanggil berkali-kali dan dari dalam task job sendiri. Penutupan
+        dijalankan sebagai task terpisah + ``shield`` supaya tetap selesai walau
+        pemanggilnya dibatalkan (mis. tombol Stop atau tab ditutup).
         """
         self._running = False
-        browser, playwright = self._browser, self._playwright
+        if self._closing is None:
+            self._closing = asyncio.create_task(self._close_now())
+        await asyncio.shield(self._closing)
+
+    async def _close_now(self) -> None:
+        browser, playwright, context = self._browser, self._playwright, self._context
         self._browser = None
         self._playwright = None
         self._page = None
         self._context = None
+
+        # Tutup tab (context) bot ini saja; sesi lain tidak ikut terganggu.
+        try:
+            if context is not None:
+                await context.close()
+        except Exception:
+            pass
+
+        if self._shared:
+            if not self._released:
+                self._released = True
+                # Chromium ditutup hanya saat tidak ada sesi lain yang memakainya.
+                await _POOL.release()
+            return
+
         try:
             if browser is not None:
                 await browser.close()
@@ -181,6 +367,11 @@ class LiveSession:
         await self._shutdown_browser()
 
 
+def active_session_count() -> int:
+    """Jumlah script bot (Chromium) yang sedang benar-benar berjalan."""
+    return sum(1 for sesi in _SESSIONS.values() if sesi.is_browser_alive())
+
+
 def _get_session(token: str) -> LiveSession:
     session = _SESSIONS.get(token)
     if session is None:
@@ -196,6 +387,25 @@ async def start_live(request: StartRequest) -> dict:
         raise HTTPException(status_code=422, detail="comment_count harus 1-100")
     if not (1 <= request.max_posts <= 50):
         raise HTTPException(status_code=422, detail="max_posts harus 1-50")
+    from comment_ai import TONES, normalize_tone
+
+    tone_input = str(request.tone or "").strip().lower()
+    if tone_input and tone_input not in TONES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"tone harus salah satu dari: {', '.join(TONES)}",
+        )
+    tone = normalize_tone(tone_input)
+
+    aktif = active_session_count()
+    if aktif >= MAX_CONCURRENT_SESSIONS:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Maksimal {MAX_CONCURRENT_SESSIONS} bot berjalan bersamaan. "
+                "Tunggu salah satu selesai lalu coba lagi."
+            ),
+        )
     token = uuid.uuid4().hex
     session = LiveSession(token)
     _SESSIONS[token] = session
@@ -205,6 +415,7 @@ async def start_live(request: StartRequest) -> dict:
         request.target.strip(),
         request.comment_count,
         request.max_posts,
+        tone,
     )
     return {"token": token, "width": session.width, "height": session.height}
 
@@ -212,6 +423,8 @@ async def start_live(request: StartRequest) -> dict:
 @router.get("/{token}/frame")
 async def live_frame(token: str) -> Response:
     session = _get_session(token)
+    # Tandai bahwa ada yang menonton, supaya loop screenshot tetap berjalan.
+    session._last_frame_request = time.monotonic()
     if not session.latest_jpeg:
         return Response(status_code=204)
     return Response(content=session.latest_jpeg, media_type="image/jpeg")
@@ -226,6 +439,9 @@ async def live_status(token: str) -> dict:
         "message": session.message,
         "logs": session.logs,
         "result": session.result,
+        # Info mode hemat: berapa tab yang sedang memakai Chromium bersama.
+        "shared_browser": SHARED_BROWSER,
+        "tabs": _POOL.users,
     }
 
 

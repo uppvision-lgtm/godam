@@ -5,4 +5,7 @@ backend/.comment-state/
 backend/__pycache__/
 *.py[cod]
 frontend/.env.local
-frontend/.next/backend/dump.rdb
+frontend/.next/
+backend/dump.rdb
+.DS_Store
+debug_shots/

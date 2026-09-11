@@ -10,8 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from celery_app import celery_app
+from comment_ai import normalize_tone
 from tasks import run_instagram_bot
 from live_session import router as live_login_router
+from presence import router as presence_router
 
 
 app = FastAPI(title="Instagram Auto Comment Bot API")
@@ -44,6 +46,7 @@ app.add_middleware(
 )
 
 app.include_router(live_login_router)
+app.include_router(presence_router)
 
 
 class JobRequest(BaseModel):
@@ -51,6 +54,8 @@ class JobRequest(BaseModel):
     target: str = Field(min_length=1, max_length=200)
     comment_count: int = Field(ge=1, le=100)
     session_id: str = Field(min_length=1, max_length=2000)
+    # Nada komentar yang dipilih user di form: positif (default) | netral | negatif
+    tone: str = "positif"
 
 
 def enforce_rate_limit(request: Request) -> None:
@@ -92,6 +97,7 @@ def start_job(request: Request, job: JobRequest) -> dict[str, str]:
         job.target,
         job.comment_count,
         encrypted_session_id,
+        normalize_tone(job.tone),
     )
     return {"task_id": task.id, "status": "submitted"}
 

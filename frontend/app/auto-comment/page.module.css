@@ -105,6 +105,202 @@
   border-color: #7fe0a0;
 }
 
+/* ===== Pilihan jenis komentar (tone) ===== */
+.toneGroup {
+  border: 0;
+  padding: 0;
+  margin: 0 0 14px;
+}
+
+.toneGroup legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #c8d2cb;
+}
+
+.toneOptions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.toneCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  text-align: left;
+  border: 1px solid #2c352e;
+  border-radius: 10px;
+  background: #0f1210;
+  color: #c8d2cb;
+  padding: 10px 10px 11px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.toneCard:hover {
+  border-color: #3d4a40;
+}
+
+.toneCardActive {
+  border-color: #7fe0a0;
+  background: #16281c;
+  color: #eef2ee;
+}
+
+.toneIcon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.toneLabel {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.toneHint {
+  font-size: 10px;
+  font-weight: 600;
+  color: #7f8d84;
+  line-height: 1.3;
+}
+
+.toneCardActive .toneHint {
+  color: #9dc7ad;
+}
+
+.toneNote {
+  margin: 8px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #d8b98a;
+  line-height: 1.4;
+}
+
+/* ===== Panel kontrol: pilih jumlah bot + satu tombol Mulai ===== */
+.controlPanel {
+  border: 1px solid #232a24;
+  border-radius: 12px;
+  background: #161a17;
+  padding: 20px;
+}
+
+.controlPanel h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.warnNote {
+  margin: 10px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #4a3a10;
+  border-left: 3px solid #ffd34d;
+  border-radius: 8px;
+  background: #221c07;
+  color: #e6cf94;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.botCountRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.botCountLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: #c8d2cb;
+}
+
+.botCountOptions {
+  display: flex;
+  gap: 6px;
+}
+
+.botCountBtn {
+  width: 38px;
+  height: 38px;
+  border: 1px solid #2c352e;
+  border-radius: 9px;
+  background: #0f1210;
+  color: #c8d2cb;
+  font: inherit;
+  font-weight: 800;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.botCountBtn:hover {
+  border-color: #3d4a40;
+}
+
+.botCountBtnActive {
+  border-color: #7fe0a0;
+  background: #16281c;
+  color: #7fe0a0;
+}
+
+/* ===== Daftar bot: satu kartu per bot (form + log + chrome live) ===== */
+.botGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.botCard {
+  border: 1px solid #232a24;
+  border-radius: 14px;
+  background: #131714;
+  padding: 16px;
+}
+
+.botHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.botHeader h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #7fe0a0;
+}
+
+/* Kartu di dalam kartu: hilangkan border ganda */
+.botCard .form,
+.botCard .logPanel,
+.botCard .livePanel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.botCard .panelRow {
+  margin-bottom: 14px;
+}
+
+.botCard .liveFrame {
+  max-height: 46vh;
+}
+
 .error {
   color: #ff9d8a;
   font-size: 12px;

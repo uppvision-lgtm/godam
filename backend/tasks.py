@@ -14,6 +14,8 @@ from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
 from celery_app import celery_app
+from browser_config import browser_args, viewport
+from comment_ai import TONES, generate_comments as generate_ai_comments, normalize_tone
 
 
 logger = logging.getLogger(__name__)
@@ -71,48 +73,104 @@ def _target_url(target: str) -> str:
 
 
 # ============================================================
-#  BANK KOMENTAR LOKAL (dari `fix copy 2.py`) — tanpa API eksternal
-#  Komentar selalu positif, relevan dgn caption, tanpa hashtag, tanpa batas.
+#  KOMENTAR: DeepSeek (utama) + BANK LOKAL (cadangan per tone)
+#  Tone yang didukung: positif (default), netral, negatif.
+#  Komentar selalu relevan dgn caption, tanpa hashtag, tanpa batas jumlah.
 # ============================================================
 
-
-def fallback_comment() -> str:
-    fallbacks = [
+FALLBACK_BANK: dict[str, list[str]] = {
+    "positif": [
         "keren banget, thanks udah share.",
         "informasi yang bermanfaat, aku suka.",
         "wah, ini bikin penasaran.",
         "seru banget, lanjutkan.",
         "ini penting banget, wajib tahu.",
-    ]
-    return random.choice(fallbacks)
+    ],
+    "netral": [
+        "info ini lumayan, ditunggu update berikutnya.",
+        "jadi lebih paham setelah nonton ini.",
+        "nonton sampai habis, isinya lumayan jelas.",
+        "menarik, topik ini memang sedang ramai dibahas.",
+        "boleh dijelaskan lagi bagian yang tadi?",
+    ],
+    "negatif": [
+        "sayangnya isinya masih kurang lengkap.",
+        "menurutku penjelasannya masih terlalu dangkal.",
+        "harusnya bagian ini dibahas lebih detail.",
+        "masih banyak yang belum jelas, semoga ada lanjutannya.",
+        "cukup disayangkan dibahas setengah-setengah.",
+    ],
+}
 
 
-def fallback_comments(reason: str = "", count: int = 3) -> list[str]:
+def fallback_comment(tone: str = "positif") -> str:
+    tone = normalize_tone(tone)
+    return random.choice(FALLBACK_BANK.get(tone) or FALLBACK_BANK["positif"])
+
+
+def fallback_comments(reason: str = "", count: int = 3, tone: str = "positif") -> list[str]:
     if reason:
-        logger.info("Fallback komentar karena: %s", reason)
+        logger.info("Fallback komentar (%s) karena: %s", normalize_tone(tone), reason)
     try:
         count = max(0, int(count))
     except Exception:
         count = 3
-    return [fallback_comment() for _ in range(count)]
+    return [fallback_comment(tone) for _ in range(count)]
 
 
-async def generate_comments_from_bank(caption: str, count: int = 6) -> list[str]:
-    """Hasilkan komentar positif sebanyak ``count`` (tanpa batas 6).
+# Template cadangan untuk tone netral & negatif (pakai {S} = subjek caption).
+_TONE_TEMPLATES: dict[str, list[str]] = {
+    "netral": [
+        "info soal {S} ini lumayan, ditunggu update selanjutnya.",
+        "jadi tahu lebih banyak soal {S} habis nonton ini.",
+        "bahasan {S} di sini cukup jelas.",
+        "baru tahu soal {S} dari postingan ini.",
+        "menarik, {S} memang lagi sering dibahas belakangan ini.",
+        "nonton sampai habis, soal {S} jadi lebih kebayang.",
+        "sekadar menambahkan, {S} juga sempat diberitakan di tempat lain.",
+        "boleh dijelaskan lagi bagian {S}-nya?",
+        "catatan aja soal {S}, semoga updatenya rutin.",
+        "oke, {S} masuk daftar yang mau aku ikuti.",
+        "terima kasih infonya soal {S}.",
+        "menarik soal {S}, tapi masih pengen tahu detailnya.",
+    ],
+    "negatif": [
+        "sayangnya penjelasan soal {S} masih kurang lengkap.",
+        "menurutku bahasan {S} di sini masih terlalu dangkal.",
+        "harusnya soal {S} dibahas lebih detail, bukan cuma sekilas.",
+        "kurang setuju sama cara penyampaian {S} di sini.",
+        "masih banyak yang belum jelas soal {S}, semoga ada lanjutannya.",
+        "kayaknya perlu data yang lebih kuat soal {S}.",
+        "judulnya soal {S} tapi isinya belum menjawab rasa penasaran.",
+        "semoga ke depannya pembahasan {S} lebih jelas dan tidak membingungkan.",
+        "cukup disayangkan {S} dibahas setengah-setengah.",
+        "menurutku bagian {S} perlu dikoreksi, masih ada yang meleset.",
+        "tunggu update berikutnya soal {S}, semoga lebih rapi.",
+        "semoga {S} tidak cuma jadi konten sesaat.",
+    ],
+}
 
-    Logika disalin 1:1 dari ``fix copy 2.py`` (generate_comments_from_bank):
+
+async def generate_comments_from_bank(caption: str, count: int = 6, tone: str = "positif") -> list[str]:
+    """Hasilkan komentar sebanyak ``count`` dari bank lokal (tanpa API eksternal).
+
+    Dipakai sebagai cadangan kalau DeepSeek tidak tersedia/gagal.
+
+    Logika salinan dari ``fix copy 2.py`` (generate_comments_from_bank):
     - analisis kata kunci caption (hashtag hanya sinyal, tak ikut menempel);
-    - deteksi mood konten (concern/celebrate/tips/music/food/travel/live/news);
-    - komentar dibangun dari template positif x subjek, dijamin unik & tanpa
-      kata negatif, lalu diisi sampai penuh lewat bank cadangan.
+    - deteksi mood konten (concern/celebrate/tips/music/food/travel/live/news)
+      untuk tone positif (default);
+    - tone netral/negatif memakai template khusus agar nadanya tidak meleset;
+    - komentar dijamin unik & diisi sampai penuh lewat bank cadangan.
     """
+    tone = normalize_tone(tone)
     try:
         count = max(0, int(count))
     except Exception:
         count = 6
     if not caption or len(caption) < 3:
         logger.info("Caption kosong atau terlalu pendek: %r", caption)
-        return fallback_comments("caption kosong", count)
+        return fallback_comments("caption kosong", count, tone)
 
     # Bersihkan caption; buang tanda # agar tag tidak ikut menempel di komentar.
     cleaned = re.sub(r"\s+", " ", caption).strip()
@@ -164,7 +222,7 @@ async def generate_comments_from_bank(caption: str, count: int = 6) -> list[str]
             body_tokens.append((tok, low))
 
     if not body_tokens:
-        return fallback_comments("caption terlalu pendek", count)
+        return fallback_comments("caption terlalu pendek", count, tone)
 
     # Skor tiap kata kunci: makin cocok dgn hashtag & nama/entitas = makin relevan.
     role_words = {
@@ -228,8 +286,10 @@ async def generate_comments_from_bank(caption: str, count: int = 6) -> list[str]
     if k2 != k1:
         _add_subj(f"{k1} dan {k2}")
 
-    # --- Bank template positif per mood (pakai {S} = subjek) ---
-    if mood == "concern":
+    # --- Bank template per mode/tone (pakai {S} = subjek) ---
+    if tone != "positif":
+        templates = _TONE_TEMPLATES[tone]
+    elif mood == "concern":
         templates = [
             "Turut berduka dan mendoakan yang terbaik, semoga semua yang ditinggalkan diberi ketabahan.",
             "Semoga semua yang terdampak {S} diberi kekuatan dan lekas pulih.",
@@ -374,11 +434,13 @@ async def generate_comments_from_bank(caption: str, count: int = 6) -> list[str]
     }
 
     # Gabungkan template x subjek = banyak variasi komentar unik.
+    # Filter kata negatif hanya berlaku untuk tone positif (tone negatif justru
+    # memang menyoroti kekurangan, tapi tetap sopan karena template-nya dijaga).
     pool = []
     for tmpl in templates:
         for subj in subjects:
             line = tmpl.format(S=subj)
-            if any(w in line.lower() for w in negatif):
+            if tone == "positif" and any(w in line.lower() for w in negatif):
                 continue
             pool.append(line)
 
@@ -1032,12 +1094,15 @@ async def _process_posts(
     comment_count: int,
     log: Any | None = None,
     max_posts: int | None = None,
+    tone: str = "positif",
 ) -> dict[str, Any]:
     """Proses postingan target persis seperti ``fix copy 2.py`` (main):
 
     Auto-like (hanya di postingan) -> hitung komentar @username -> top-up
-    sampai ``comment_count`` memakai bank komentar lokal (tanpa batas).
+    sampai ``comment_count`` memakai komentar dari DeepSeek (cadangan: bank
+    lokal) sesuai ``tone`` yang dipilih user (positif/netral/negatif).
     """
+    tone = normalize_tone(tone)
     commented_posts = _load_commented_state(username)
     comments_posted = 0
 
@@ -1100,10 +1165,17 @@ async def _process_posts(
             log(f"  Perlu menambahkan {need} komentar lagi.")
         if not caption:
             if log:
-                log("  Caption kosong, pakai komentar dari bank.")
-            comments_to_send = fallback_comments("caption tidak ditemukan", need)
+                log(f"  Caption kosong, pakai komentar cadangan ({tone}).")
+            comments_to_send = fallback_comments("caption tidak ditemukan", need, tone)
         else:
-            comments_to_send = await generate_comments_from_bank(caption, need)
+            if log:
+                log(f"  Menyusun {need} komentar (tone: {tone})...")
+            comments_to_send = await generate_ai_comments(
+                caption,
+                need,
+                tone=tone,
+                local_fallback=generate_comments_from_bank,
+            )
         comments_to_send = comments_to_send[:need]
         random.shuffle(comments_to_send)
 
@@ -1143,6 +1215,7 @@ async def _run_bot_async(
     target: str,
     comment_count: int,
     session_id: str,
+    tone: str = "positif",
 ) -> dict[str, Any]:
     if not username.strip() or not target.strip():
         raise ValueError("username and target are required")
@@ -1152,9 +1225,9 @@ async def _run_bot_async(
         raise ValueError("comment_count must be zero or greater")
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=True, args=browser_args())
         context = await browser.new_context(
-            viewport={"width": random.randint(1200, 1400), "height": random.randint(800, 900)},
+            viewport=viewport(),
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -1165,7 +1238,9 @@ async def _run_bot_async(
             context.set_default_timeout(PLAYWRIGHT_TIMEOUT_MS)
             context.set_default_navigation_timeout(PLAYWRIGHT_NAVIGATION_TIMEOUT_MS)
             await _add_session_cookie(page, session_id)
-            return await _process_posts(page, username, target, comment_count)
+            return await _process_posts(
+                page, username, target, comment_count, tone=normalize_tone(tone)
+            )
         finally:
             await browser.close()
 
@@ -1177,14 +1252,22 @@ def run_instagram_bot(
     target: str,
     comment_count: int,
     session_id: str = "",
+    tone: str = "positif",
 ) -> dict[str, Any]:
-    logger.info("Starting Instagram bot task %s for %s -> %s", self.request.id, username, target)
+    tone = normalize_tone(tone)
+    logger.info(
+        "Starting Instagram bot task %s for %s -> %s (tone=%s)",
+        self.request.id,
+        username,
+        target,
+        tone,
+    )
     self.update_state(state="PROCESSING", meta={"step": "starting_browser"})
     try:
         session = decrypt_secret(session_id) if session_id else ""
         if not session:
             raise BotExecutionError("session_id is required")
-        result = asyncio.run(_run_bot_async(username, target, comment_count, session))
+        result = asyncio.run(_run_bot_async(username, target, comment_count, session, tone))
         logger.info("Instagram bot task %s completed: %s", self.request.id, result)
         return result
     except RetryableBotError as error:
