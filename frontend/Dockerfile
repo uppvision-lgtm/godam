@@ -5,7 +5,9 @@ RUN npm ci
 
 FROM node:20-alpine AS builder
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
+# Wajib supaya next.config.ts menyalakan output "standalone" (lihat file itu).
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    BUILD_STANDALONE=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
