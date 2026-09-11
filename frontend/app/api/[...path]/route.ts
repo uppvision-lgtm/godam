@@ -44,12 +44,14 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       });
     }
 
-    // 204/304 tidak boleh punya body (endpoint /frame memakai 204 saat frame
-    // belum siap) — kalau dipaksa, Next akan error dan membalas 502.
-    if (response.status === 204 || response.status === 304) {
+    // 204/304 dan respons tanpa isi tidak boleh punya body (endpoint /frame
+    // memakai 204 saat frame belum siap) — kalau dipaksa, Next akan error dan
+    // membalas 502.
+    const payload = await response.arrayBuffer();
+    if (response.status === 204 || response.status === 304 || payload.byteLength === 0) {
       return new NextResponse(null, { status: response.status });
     }
-    return new NextResponse(await response.arrayBuffer(), {
+    return new NextResponse(payload, {
       status: response.status,
       headers: { "content-type": responseType },
     });

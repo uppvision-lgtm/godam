@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import styles from "./page.module.css";
 
 type BotResult = {
@@ -89,8 +89,17 @@ function apiUrl(path: string): string {
   return `http://localhost:8000${path}`; // langsung ke backend PC
 }
 
+function subscribeMode(onStoreChange: () => void) {
+  window.addEventListener("popstate", onStoreChange);
+  return () => window.removeEventListener("popstate", onStoreChange);
+}
+
+function getPcModeSnapshot() {
+  return new URLSearchParams(window.location.search).get("mode") === "pc";
+}
+
 export default function Home() {
-  const [isPc, setIsPc] = useState(false);
+  const isPc = useSyncExternalStore(subscribeMode, getPcModeSnapshot, () => false);
   const [botCount, setBotCount] = useState(1);
   const [bots, setBots] = useState<BotSlot[]>(() => [createBot(1)]);
   const [starting, setStarting] = useState(false);
@@ -104,15 +113,6 @@ export default function Home() {
   useEffect(() => {
     botsRef.current = bots;
   }, [bots]);
-
-  // Mode PC dibaca dari query string; dijalankan setelah render pertama supaya
-  // tidak ada perbedaan HTML antara server dan browser.
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setIsPc(new URLSearchParams(window.location.search).get("mode") === "pc");
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   // ===== TARIK STATUS SEMUA BOT =====
   const tarikStatus = useCallback(async () => {

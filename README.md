@@ -10,6 +10,12 @@ instagram-bot-app/
 └── backend/     # FastAPI + Python
 ```
 
+## Deploy ke VPS Hostinger
+
+Auto-deploy lewat GitHub Actions + Docker. Setiap push ke `main` menjalankan `git pull` dan `docker compose` di VPS lewat SSH.
+
+Langkah lengkap (Secrets, SSH key, setup VPS): lihat [deploy/README.md](deploy/README.md).
+
 ## Menjalankan Secara Lokal
 
 ### 1. Konfigurasi environment

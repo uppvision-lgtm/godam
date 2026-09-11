@@ -1,16 +1,28 @@
 """Live browser run (session-id based).
 
-Opens a Playwright browser inside the FastAPI process, authenticates using the
-Instagram ``sessionid`` cookie, then runs the whole comment job on the visible
-page while streaming JPEG frames and a step log to the frontend. The user can
-therefore watch the bot work from start to finish without needing a CAPTCHA.
+Opens a Playwright browser, authenticates using the Instagram ``sessionid``
+cookie, then runs the whole comment job on the visible page while streaming
+JPEG frames and a step log to the frontend. The user can therefore watch the
+bot work from start to finish without needing a CAPTCHA.
+
+Semua pekerjaan Playwright dijalankan di SATU thread khusus dengan event loop
+sendiri (lihat ``_BrowserRuntime``). Dua alasan:
+
+1. Windows. Loop default uvicorn (Selector) tidak bisa menjalankan subprocess,
+   sehingga Chromium gagal dibuka dengan ``NotImplementedError`` tanpa pesan.
+   Loop di thread ini selalu Proactor.
+2. Hemat memori. Objek Playwright terikat pada loop tempat ia dibuat, jadi satu
+   loop bersama adalah syarat agar 1 Chromium bisa dipakai banyak tab sekaligus.
 """
 
 import asyncio
 import logging
 import os
+import sys
+import threading
 import time
 import uuid
+from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
@@ -45,6 +57,50 @@ SHARED_BROWSER = os.getenv("LIVE_SHARED_BROWSER", "1").strip().lower() not in (
     "no",
     "off",
 )
+
+
+class _BrowserRuntime:
+    """Satu thread + event loop khusus untuk seluruh pekerjaan Playwright.
+
+    Endpoint FastAPI tetap berjalan di loop-nya sendiri dan menitipkan
+    coroutine ke sini lewat :meth:`run`. Thread dibuat saat pertama dibutuhkan
+    dan dipakai ulang oleh semua sesi.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+
+    def _loop_siap(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            loop = self._loop
+            if loop is not None and loop.is_running():
+                return loop
+            siap = threading.Event()
+
+            def jalankan() -> None:
+                if sys.platform == "win32":
+                    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+                loop_baru = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop_baru)
+                self._loop = loop_baru
+                loop_baru.call_soon(siap.set)
+                loop_baru.run_forever()
+
+            self._thread = threading.Thread(target=jalankan, name="playwright", daemon=True)
+            self._thread.start()
+            if not siap.wait(20) or self._loop is None:
+                raise RuntimeError("Thread browser gagal disiapkan")
+            return self._loop
+
+    async def run(self, coro):
+        """Jalankan ``coro`` di thread browser, tunggu hasilnya dari loop FastAPI."""
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop_siap())
+        return await asyncio.wrap_future(future)
+
+
+_RUNTIME = _BrowserRuntime()
 
 
 class _SharedBrowserPool:
@@ -171,6 +227,22 @@ class LiveSession:
         max_posts: int = 3,
         tone: str = "positif",
     ) -> None:
+        """Dipanggil dari loop FastAPI; browsernya dibuka di thread khusus."""
+        await _RUNTIME.run(
+            self._start_di_thread_browser(
+                username, session_id, target, comment_count, max_posts, tone
+            )
+        )
+
+    async def _start_di_thread_browser(
+        self,
+        username: str,
+        session_id: str,
+        target: str,
+        comment_count: int,
+        max_posts: int = 3,
+        tone: str = "positif",
+    ) -> None:
         headless = os.getenv("LIVE_HEADLESS", "false").lower() == "true"
         try:
             if SHARED_BROWSER:
@@ -195,7 +267,7 @@ class LiveSession:
             await self._blokir_resource_berat()
             from tasks import _add_session_cookie
 
-            await _add_session_cookie(self._page, session_id)
+            await _add_session_cookie(self._page, unquote(session_id).strip())
             self.status = "running"
             self.message = f"Session dipasang. Membuka @{target} ..."
             self.add_log(f"Session diterima untuk akun {username}")
@@ -211,9 +283,13 @@ class LiveSession:
                 self._run_job(username, target, comment_count, max_posts, tone)
             )
         except Exception as exc:
+            # NotImplementedError dari loop Windows datang tanpa pesan, jadi
+            # nama kelasnya ikut ditampilkan supaya tidak membingungkan.
+            detail = str(exc).strip() or repr(exc)
+            logger.exception("Gagal menyiapkan browser")
             self.status = "error"
-            self.message = f"Gagal menyiapkan browser: {exc}"
-            self.add_log(f"Error: {exc}")
+            self.message = f"Gagal menyiapkan browser: {type(exc).__name__}: {detail}"
+            self.add_log(f"Error: {type(exc).__name__}: {detail}")
 
     async def _capture_loop(self) -> None:
         """Kirim frame ke frontend — hanya saat ada yang menonton.
@@ -294,6 +370,9 @@ class LiveSession:
                 f"pada {result.get('posts_processed', 0)} postingan."
             )
             self.add_log(self.message)
+        except asyncio.CancelledError:
+            # Dibatalkan tombol Stop: bukan kegagalan job.
+            raise
         except Exception as exc:
             self.status = "error"
             self.message = f"Job gagal: {exc}"
@@ -355,6 +434,9 @@ class LiveSession:
 
     async def close(self) -> None:
         """Hentikan task & tutup browser segera (dipanggil tombol Stop)."""
+        await _RUNTIME.run(self._close_di_thread_browser())
+
+    async def _close_di_thread_browser(self) -> None:
         self._running = False
         for task in (self._capture_task, self._job_task):
             if task is None:
